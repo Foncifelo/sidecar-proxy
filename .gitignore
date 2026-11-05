@@ -1,0 +1,26 @@
+# binaries and build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.html
+
+# local config with provider keys — never commit
+/sidecar.yaml
+.env
+.env.*
+
+# queue and local state
+/data/
+*.queue
+
+# editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# binary built at repo root by go build ./cmd/sidecar
+/sidecar
+
+# stamp of the exporter in the private repository (scripts/export-public.sh)
+/.export-public-stamp

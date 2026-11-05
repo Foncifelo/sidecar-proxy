@@ -1,0 +1,1 @@
+{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"example/fictional-embed","usage":{"prompt_tokens":9,"total_tokens":9}}

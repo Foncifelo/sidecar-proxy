@@ -1,0 +1,72 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - errname
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - gocritic
+    - gosec
+    - misspell
+    - noctx
+    - nilerr
+    - prealloc
+    - revive
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - wrapcheck
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: ^http\.DefaultClient$
+          msg: use a client with explicit timeouts (internal/transport)
+        - pattern: ^http\.DefaultTransport$
+          msg: one http.Transport per provider (internal/transport)
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: use the slog logger from internal/logging
+        - pattern: ^httputil\.ReverseProxy$
+          msg: ADR 0003 — the proxy is a custom handler
+        - pattern: ^log\.(Print|Fatal|Panic)
+          msg: use internal/logging
+    gosec:
+      excludes:
+        - G104 # handled by errcheck
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: unused-parameter
+        - name: var-naming
+    wrapcheck:
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Join(
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec, wrapcheck, noctx, forbidigo]
+      - path: ^cmd/
+        linters: [forbidigo]
+        text: fmt\.Print
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Foncifelo/sidecar-proxy

@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.7
+# Base images pinned by digest (multi-arch index); Dependabot bumps them.
+FROM golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/sidecar ./cmd/sidecar
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+COPY --from=build /out/sidecar /sidecar
+VOLUME ["/data/queue"]
+USER nonroot:nonroot
+EXPOSE 8787 9797
+ENTRYPOINT ["/sidecar"]

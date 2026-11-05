@@ -1,0 +1,10 @@
+: keepalive
+
+data: {"id":"fict-1","object":"chat.completion.chunk","model":"fictional-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Hola"}}]}
+
+data: {"id":"fict-1","object":"chat.completion.chunk","model":"fictional-model","choices":[{"index":0,"delta":{"content":" mundo"},"finish_reason":"stop"}]}
+
+data: {"id":"fict-1","object":"chat.completion.chunk","model":"fictional-model","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}
+
+data: [DONE]
+

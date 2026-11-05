@@ -1,0 +1,8 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fict-0005","provider":"FictProviderA","object":"chat.completion.chunk","created":1700000000,"model":"fictitious/model-a","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_fict","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-fict-0005","provider":"FictProviderA","object":"chat.completion.chunk","created":1700000000,"model":"fictitious/model-a","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":9,"total_tokens":29}}
+
+data: [DONE]
+

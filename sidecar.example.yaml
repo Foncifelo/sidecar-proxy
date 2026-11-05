@@ -1,0 +1,59 @@
+# sidecar.yaml — copy to sidecar.yaml (git-ignored) and fill in. The YAML is the policy of record:
+# the control plane can only choose among the endpoints and channels listed here.
+
+mode: shadow                     # shadow | route | passthrough
+listen: 127.0.0.1:8787           # anything other than loopback REQUIRES inbound_token
+metrics_listen: 127.0.0.1:9797
+# inbound_token: ${SIDECAR_INBOUND_TOKEN}   # the Bearer your agent already sends; required off-loopback
+
+# Where traffic went before the sidecar existed. Unknown routes and shadow mode go here untouched.
+upstream:
+  provider: together                    # id of the upstream's provider (same ids as providers/routing)
+  base_url: https://api.together.xyz/v1
+  api_key: ${TOGETHER_API_KEY}
+
+control_plane:
+  url: https://control.example.com      # set per region cell
+  api_key: ${SIDECAR_API_KEY}           # sk_live_... ; never a provider key
+  policy_refresh: 60s
+  queue_dir: ./data/queue               # append-only, fsync; mount a volume in containers
+  queue_max_mb: 256
+
+limits:
+  max_body_mb: 10
+  max_inflight: 256
+  first_byte_timeout: 2s                # fallback trigger when no headers/first byte
+  nonstream_first_byte_timeout: 30s     # route without stream: headers only come with the whole answer
+  ttft_p95_slack: 500ms                 # fallback when first token later than client p95 + slack
+  read_header_timeout: 10s              # server: time to read the agent's request headers
+  read_timeout: 60s                     # server: time to read the agent's headers + body
+  idle_timeout: 120s                    # server: keep-alive connection idle time
+  stream_write_timeout: 30s             # deadline of each write to the agent, renewed per chunk
+  stream_idle_timeout: 120s             # upstream silent this long mid-response -> event: error, truncated
+
+routing:
+  allowed_channels: [openrouter, direct]
+  allowed_providers: [together, deepinfra, fireworks, groq, novita]
+  max_ttft_p95_ms: 1200
+  min_uptime_1d: 0.99
+
+# Every outbound URL and header comes from here (ADR 0008); the control plane never sends any.
+# base_url is https only. Exception (ADR 0011, demo only): http to exactly 127.0.0.1, [::1] or localhost
+# is accepted when SIDECAR_ENV is exactly dev or staging; the sidecar logs it once at startup. In route mode it is required for every direct provider with an api_key;
+# only openrouter has a built-in default (https://openrouter.ai/api/v1), nothing inherits upstream.base_url.
+# auth_header (optional) names the header that carries the key, without prefix; default "Authorization: Bearer".
+providers:
+  openrouter:
+    api_key: ${OPENROUTER_API_KEY}      # one key, many providers (pinning); first route channel
+    # http_referer: https://example.com # optional, sent as HTTP-Referer; absolute https URL; openrouter only
+    # x_title: my-agent                 # optional, sent as X-Title; openrouter only
+  together:
+    api_key: ${TOGETHER_API_KEY}
+    base_url: https://api.together.xyz/v1
+  deepinfra:
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
+
+tags:                                   # allowlist; values <= 64 chars; no PII (DPA)
+  allowed_keys: [agent, env, team]
+  header: X-Sidecar-Tags                # "agent=billing-bot,env=prod"

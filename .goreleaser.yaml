@@ -1,0 +1,66 @@
+# goreleaser v2 — https://goreleaser.com
+version: 2
+
+project_name: sidecar
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: sidecar
+    main: ./cmd/sidecar
+    binary: sidecar
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/Foncifelo/sidecar-proxy/internal/version.Version={{.Tag}}
+      - -X github.com/Foncifelo/sidecar-proxy/internal/version.Commit={{.Commit}}
+      - -X github.com/Foncifelo/sidecar-proxy/internal/version.Date={{.CommitDate}}
+
+archives:
+  - id: sidecar
+    ids: [sidecar]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md, sidecar.example.yaml, docs/quickstart.md]
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+# Keyless signature of checksums.txt as one Sigstore bundle (certificate, signature and
+# transparency-log proof). Works with cosign v2.4+ and v3; docs/quickstart.md verifies it.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
+    artifacts: checksum
+
+# No container image yet: deploy/Dockerfile.sidecar builds one from source.
+
+# brews:
+#   - repository: { owner: Foncifelo, name: homebrew-tap }   # create the tap repo first
+#     homepage: https://github.com/Foncifelo/sidecar-proxy
+#     description: Local OpenAI-compatible sidecar that routes open-model traffic to the cheapest provider that meets your latency
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - { title: Features, regexp: '^feat' }
+    - { title: Fixes, regexp: '^fix' }
+    - { title: Other, order: 999 }
+
+release:
+  draft: true          # a human publishes the release after reading the notes
+  prerelease: auto

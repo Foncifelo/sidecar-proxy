@@ -1,0 +1,1 @@
+{"id":"chatcmpl-fake1","object":"chat.completion","created":1761609600,"model":"example/fictional-model-70b","choices":[{"index":0,"message":{"role":"assistant","content":"fictional"},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":50,"total_tokens":170,"prompt_tokens_details":{"cached_tokens":100},"completion_tokens_details":{"reasoning_tokens":20}}}

@@ -1,0 +1,11 @@
+{
+  "model": "example/fictional-model-70b",
+  "messages": [{"role": "user", "content": "hola é <b>&</b>"}],
+  "stream": true,
+  "stream_options": {"include_usage": true, "x_extra": 1},
+  "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
+  "response_format": {"type": "json_schema", "json_schema": {"name": "s", "schema": {"type": "object"}}},
+  "n": 2,
+  "logprobs": true,
+  "temperature": 0.25
+}

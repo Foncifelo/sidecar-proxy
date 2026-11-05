@@ -1,0 +1,6 @@
+data: {"id":"fict-0003","object":"chat.completion.chunk","created":1700000000,"model":"fictitious/model-a","choices":[{"index":0,"delta":{"role":"assistant","content":"fictitious"},"finish_reason":null}]}
+
+data: {"id":"fict-0003","object":"chat.completion.chunk","created":1700000000,"model":"fictitious/model-a","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

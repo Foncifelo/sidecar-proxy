@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Install with: make hooks
+set -euo pipefail
+
+staged_go=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+if [ -n "$staged_go" ]; then
+  unformatted=$(gofmt -l $staged_go)
+  if [ -n "$unformatted" ]; then
+    echo "gofmt needed on:"; echo "$unformatted"; exit 1
+  fi
+  go vet ./... >/dev/null
+fi
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --no-banner
+else
+  echo "warning: gitleaks not installed; secrets are only checked in CI" >&2
+fi
+
+if git diff --cached --name-only | grep -qx 'sidecar.yaml'; then
+  echo "refusing to commit sidecar.yaml (may contain provider keys)"; exit 1
+fi

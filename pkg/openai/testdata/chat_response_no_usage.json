@@ -1,0 +1,1 @@
+{"id":"chatcmpl-fake2","object":"chat.completion","created":1761609600,"model":"example/fictional-model-8b","choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"length"}]}
