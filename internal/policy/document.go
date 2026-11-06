@@ -10,7 +10,9 @@ import (
 
 // SchemaVersion is the highest policy schema_version this binary understands
 // (docs/politica.md). It is independent of the ingest envelope version.
-const SchemaVersion = 1
+// Schema 2 adds the fp4 quantization; the control plane serves schema 1
+// without it.
+const SchemaVersion = 2
 
 // Channel is the execution channel of a candidate.
 type Channel string

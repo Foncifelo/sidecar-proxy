@@ -56,6 +56,10 @@ Ante `426`, el sidecar deja de pedir la política hasta reiniciarse, como hace l
   - El sidecar rechaza un documento con `schema_version` mayor que la que soporta, y conserva la política anterior.
   - Ignora los campos que no conoce.
 - **Sentido de los campos nuevos:** un campo nuevo solo puede reducir el enrutado. Un sidecar viejo que lo ignora nunca enruta de más por no entenderlo.
+- **Valores nuevos de un enum:** el sidecar valida los enums al decodificar, así que un valor nuevo sube `schema_version` y el control no lo sirve a las versiones anteriores.
+- **Versiones:**
+  - `1`: la inicial.
+  - `2`: añade `fp4` a `quantization`. Al servir la versión 1, el control quita los candidatos `fp4` y presenta un `current` `fp4` como `int4`, el valor con el que empata. Como `current` es solo referencia, un sidecar de la versión 1 ve elegibles los candidatos `int4` o mejores, igual que la versión 2 sin los `fp4`. No se presenta como `unknown`, porque eso haría elegibles a los candidatos `unknown`.
 
 ## Documento
 
@@ -63,7 +67,7 @@ Ejemplo **ficticio** (modelo, endpoint, importes y latencias inventados para ilu
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "version": "p_3f9a1c…",
   "computed_at": "2026-10-29T14:00:00Z",
   "flags": {},
@@ -135,7 +139,7 @@ Ejemplo **ficticio** (modelo, endpoint, importes y latencias inventados para ilu
 | `schema_version` | entero | Versión del formato de este documento |
 | `version` | string | Hash estable del contenido, sin `computed_at`: los mismos datos dan la misma `version`. Es también el `ETag` y el `policy_version` del evento (`docs/evento.md`) |
 | `computed_at` | RFC 3339 UTC | Cuándo se calculó. Informativo: no entra en `version` |
-| `flags` | objeto | Interruptores globales. En `schema_version` 1 no hay ninguno definido y llega `{}`. Un flag futuro solo puede reducir el enrutado, y el sidecar ignora los que no conoce |
+| `flags` | objeto | Interruptores globales. En las `schema_version` 1 y 2 no hay ninguno definido y llega `{}`. Un flag futuro solo puede reducir el enrutado, y el sidecar ignora los que no conoce |
 | `models` | objeto `{model_id: Modelo}` | Una entrada por modelo canónico (`models.id`). Un modelo ausente equivale a `unknown_model` |
 
 ### Modelo
@@ -158,8 +162,8 @@ Ejemplo **ficticio** (modelo, endpoint, importes y latencias inventados para ilu
 | `provider` | string | Proveedor que sirve la llamada (`endpoints.provider_id`). En canal `openrouter` es el proveedor que se fija con pinning |
 | `channel` | `direct` \| `openrouter` | Canal de ejecución |
 | `provider_model_name` | string | Lo que va en `model` hacia ese canal |
-| `quantization` | `bf16` \| `fp16` \| `fp8` \| `int8` \| `int4` \| `unknown` | Igual que `decision.Quantization` y el CHECK de `endpoints.quantization` |
-| `caps` | objeto | `{tools, json_schema, vision, logprobs, n}`, igual que `endpoints.caps` |
+| `quantization` | `bf16` \| `fp16` \| `fp8` \| `int8` \| `int4` \| `fp4` \| `unknown` | Igual que `decision.Quantization` y el CHECK de `endpoints.quantization`. Orden del filtro "igual o mejor": `bf16` = `fp16` > `fp8` > `int8` > `int4` = `fp4`; `unknown` solo iguala a `unknown`. `fp4` agrupa FP4, MXFP4 y NVFP4. `fp4` existe desde la `schema_version` 2; ver "Compatibilidad" para lo que recibe un sidecar de la versión 1 |
+| `caps` | objeto | `{tools, json_schema, vision, logprobs, n}`, igual que `endpoints.caps`, salvo un caso: `tools` llega a `false` si el endpoint no pasa el criterio de calidad de tool calls (ver "Calidad de tool calls") |
 | `context_length` | entero | Ventana de contexto en tokens. `0` o ausente = desconocida |
 | `price` | Precio | El precio de lista vigente en `computed_at`  |
 | `stats` | Stats | Salud y latencia observadas |
@@ -223,7 +227,7 @@ El filtro conserva el orden y cuenta los descartes por motivo. Los umbrales del 
 
 El reparto de filtros es este:
 
-- **Plano de control.** Aplica los filtros que no dependen de la petición, con las reglas de `internal/decision`: disponibilidad, p90 frente a `client_ttft_p95_ms` y `tps_p50` frente a `client_tps_p50`.
+- **Plano de control.** Aplica los filtros que no dependen de la petición, con las reglas de `internal/decision`: disponibilidad, p90 frente a `client_ttft_p95_ms` y `tps_p50` frente a `client_tps_p50`. Además decide el criterio de calidad de tool calls y lo expresa en `caps.tools` (ver "Calidad de tool calls").
 - **Sidecar.** Aplica los que sí dependen de la petición, con `decision`: `caps`, contexto y cuantización igual o mejor que la del endpoint actual.
 
 Lo que la petición exige se lee de su cuerpo sin guardar ni registrar contenido (regla 1):
@@ -232,6 +236,24 @@ Lo que la petición exige se lee de su cuerpo sin guardar ni registrar contenido
 - **Contexto:** es una estimación conservadora, `bytes del cuerpo / 4 + max_completion_tokens` (o `max_tokens` si no viene el primero). Solo se usa la longitud del cuerpo. El marco JSON suma bytes, así que la estimación suele quedar por encima de los tokens reales. Un candidato con `context_length` desconocido (`0`) no pasa este filtro.
 
 Si ningún candidato pasa, la petición sigue en el upstream del YAML, como con cualquier otro filtro.
+
+### Calidad de tool calls
+
+El plano de control mide, con sondas sintéticas propias, si cada endpoint responde bien a las llamadas a herramientas. Las sondas usan un conjunto fijo y versionado de 3 herramientas con esquema JSON y 5 prompts inventados. Nunca usan prompts ni respuestas de clientes. Una respuesta es válida si cumple todo esto:
+
+- trae al menos una tool call;
+- cada llamada nombra una herramienta del conjunto;
+- sus `arguments` son un string JSON con un objeto que valida contra el esquema de esa herramienta;
+- `finish_reason` es `tool_calls`.
+
+El agregado es `toolcall_ok_rate_7d`: las respuestas válidas entre las evaluadas en los últimos 7 días. Un error de transporte o un estado distinto de `200` no cuenta como muestra.
+
+- **Criterio:** `toolcall_ok_rate_7d ≥ umbral`. El umbral es configuración del plano de control y por defecto vale 0,95. La comparación se hace con enteros (`ok × 10.000 < umbral_bps × muestras`), sin `float`.
+- **Muestras mínimas:** 10 respuestas evaluadas en 7 días (dos pasadas completas del conjunto). Con menos, o sin datos recientes, el endpoint queda **sin datos de calidad** y el criterio **no lo excluye**, igual que pasa con las sondas de latencia.
+- **Solo para peticiones con `tools`:** un candidato por debajo del umbral se publica con `caps.tools = false`. El filtro de `caps` del sidecar lo quita entonces de las peticiones que declaran `tools` y lo deja para las demás: el filtro lo descarta por `caps_tools`.
+- **Sin campos nuevos:** el documento no cambia ni sube `schema_version`, así que todas las versiones servidas y los sidecars anteriores aplican el criterio. `caps.tools` mantiene su sentido de "este candidato puede atender peticiones con `tools`", y el criterio solo puede pasarlo de `true` a `false`, nunca al revés (regla de "Sentido de los campos nuevos").
+- **Oscilación:** un endpoint cerca del umbral puede entrar y salir del criterio de una hora a otra, y cada cambio de `caps.tools` cambia `version` y el `ETag`, así que el sidecar descarga la política otra vez. Es el mismo efecto que tienen ya los filtros de salud. No hay histéresis por ahora; si la rotación molesta, se añadirá en el cálculo, sin cambiar el documento.
+- **Dónde se ve:** el panel y el comparador público muestran la tasa por endpoint, o "—" cuando el endpoint está sin datos de calidad.
 
 ## Política vieja
 
@@ -245,10 +267,10 @@ Si ningún candidato pasa, la petición sigue en el upstream del YAML, como con 
 ## Cómo se verifica
 
 - **Tipos y filtro** (`internal/policy`):
-  - `Decode` rechaza una `schema_version` no soportada e importes no enteros.
+  - `Decode` rechaza una `schema_version` no soportada, importes no enteros y `fp4` en un documento que declara la versión 1.
   - `Filter` descarta por canal y proveedor en todos los modos, y por credenciales solo en `route`. Conserva el orden.
   - Ningún candidato sale de `current`: un test comprueba que el plan de `route` no contiene nunca un endpoint que solo esté en `current`.
   - Un test por reflexión comprueba que ningún tipo tiene campos de URL ni de llave.
 
-- **Endpoint** (plano de control): tests de handler para `200`, `304`, `401`, `426` (sidecar más viejo que N-2), sidecar más nuevo (recibe N), `ETag` con `schema_version`, documento vacío y N-2.
+- **Endpoint** (plano de control): tests de handler para `200`, `304`, `401`, `426` (sidecar más viejo que N-2), sidecar más nuevo (recibe N), `ETag` con `schema_version`, documento vacío y N-2. Un documento con `fp4` servido en la versión 1 pasa el decodificador anterior sin `fp4`, y en la 2 lo conserva, con un `ETag` distinto por versión.
 - **Descarga y caché en el sidecar** (`TestSaveLoadCache`, `TestRefreshStatuses` en `internal/policy`): caché en disco, control caído, `304` que renueva la edad y política inválida que no reemplaza a la buena.

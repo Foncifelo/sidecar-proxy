@@ -7,8 +7,8 @@ Se publica tal cual al cliente. Si cambia, cambia la versión al final y se avis
 Para cada petición:
 
 1. **Modelo canónico.** Se resuelve `raw_model` a `model_id` a través de `endpoints.provider_model_name`. Sin resolución, la petición no cuenta (se reporta aparte como "modelo desconocido").
-2. **Requisitos.** De la petición se derivan `requirements` (herramientas, `response_format`, visión, contexto, `n`). Solo compiten endpoints cuyas `caps` los cubren.
-3. **Candidatos.** Mismo `model_id`; cuantización igual o mejor que la del endpoint usado; `uptime_1d` ≥ 99%; p90 de primer token ≤ p95 del cliente para ese modelo en los últimos 7 días; `tps` p50 ≥ el del cliente.
+2. **Requisitos.** De la petición se derivan `requirements` (herramientas, `response_format`, visión, contexto, `n`). Solo compiten endpoints cuyas `caps` los cubren. Si la petición declara herramientas, tampoco compite un endpoint cuya tasa de tool calls válidas en 7 días, medida con sondas sintéticas, esté por debajo del umbral (0,95 por defecto) con al menos 10 muestras. Un endpoint sin datos de calidad sí compite. La política lo expresa con `caps.tools = false` (`docs/politica.md`, "Calidad de tool calls").
+3. **Candidatos.** Mismo `model_id`; cuantización igual o mejor que la del endpoint usado (`bf16` = `fp16` > `fp8` > `int8` > `int4` = `fp4`; `unknown` solo iguala a `unknown`); `uptime_1d` ≥ 99%; p90 de primer token ≤ p95 del cliente para ese modelo en los últimos 7 días; `tps` p50 ≥ el del cliente.
 4. **Coste del mejor.** `cost_best = tokens_in × input + tokens_out × output + tokens_reasoning × reasoning_out + tokens_cached_read × cached_in + tokens_cached_write × cache_write + per_request`, multiplicado por `(1 + channel_fee_bps / 10.000)` si el endpoint se ejecuta vía OpenRouter, con el uso real de la petición, el precio vigente en el instante de la petición (`price_id`) y los precios negociados del cliente si existen. Los cinco contadores de tokens son disjuntos (`docs/evento.md`): `tokens_in` no incluye los `tokens_cached_read` y `tokens_out` no incluye los `tokens_reasoning`, así que cada token se cobra una sola vez. Una tarifa `reasoning_out` a 0 se cobra como `output`; `cached_in` y `cache_write` a 0 se cobran como `input`. Se redondea una sola vez, al microdólar, hacia arriba en la mitad.
 5. **Ahorro.** `max(0, cost_actual − cost_best)`. Si el cliente ya está en el más barato, cero. Si no hay decisión posible (modelo desconocido, sin política o sin precio vigente para el mejor endpoint), `cost_best = cost_actual`, ahorro cero y el motivo queda explícito.
 
@@ -55,7 +55,7 @@ Lo comprueban `TestShadowPolicyDecision` (`internal/proxy/decide_test.go`) y, de
 
 Peticiones con `usage_source = none`; peticiones en `passthrough`; peticiones con error del agente (`status` 4xx devuelto al agente).
 
-Versión de la metodología: 4 (2026-10-29).
+Versión de la metodología: 5 (2026-11-05).
 
 Cambios de la 3 (2026-10-29) desde la 2: se enumeran los motivos del ahorro simulado; las fórmulas no cambian.
 

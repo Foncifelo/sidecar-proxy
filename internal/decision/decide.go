@@ -4,7 +4,8 @@ import (
 	"github.com/Foncifelo/sidecar-proxy/internal/pricing"
 )
 
-// quantRank orders quantizations: higher is better; bf16 and fp16 tie.
+// quantRank orders quantizations: higher is better; bf16 and fp16 tie, and
+// so do int4 and fp4 (docs/politica.md, Candidato).
 // QuantUnknown is handled separately because it only matches itself.
 func quantRank(q Quantization) (int, bool) {
 	switch q {
@@ -14,7 +15,7 @@ func quantRank(q Quantization) (int, bool) {
 		return 3, true
 	case QuantInt8:
 		return 2, true
-	case QuantInt4:
+	case QuantInt4, QuantFP4:
 		return 1, true
 	case QuantUnknown:
 		return 0, false

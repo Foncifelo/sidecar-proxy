@@ -2,7 +2,13 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); versiones según [SemVer](https://semver.org/lang/es/). Antes de 1.0, una versión menor puede romper compatibilidad y lo dirá aquí.
 
-## [0.1.0] — sin publicar
+## [0.2.0] — 2026-11-05
+
+- La política pasa a `schema_version: 2`, que añade la cuantización `fp4`, al nivel de `int4`: un endpoint FP4/MXFP4/NVFP4 solo sustituye a otro de 4 bits, nunca a uno de 8 bits o más. El sidecar acepta las versiones 1 y 2 y rechaza `fp4` en un documento que declara la versión 1. Los sidecars 0.1.x siguen funcionando: el plano de control les sirve la versión 1 sin candidatos `fp4`.
+- `caps.tools` de un candidato indica si puede atender peticiones con herramientas; el plano de control puede ponerlo a `false` para un endpoint cuya tasa de tool calls válidas no llega al umbral. El filtro del sidecar ya lo descarta en peticiones con `tools`.
+- Test de log de la excepción loopback sin falsos positivos por el timestamp.
+
+## [0.1.0] — 2026-11-05
 
 Primera release pública del sidecar. Fase 0: API y formato del evento todavía pueden cambiar entre versiones menores.
 

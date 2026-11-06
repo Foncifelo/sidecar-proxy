@@ -33,7 +33,34 @@ func Decode(data []byte) (Policy, error) {
 	if err := p.validate(); err != nil {
 		return Policy{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	if err := p.validateFP4Schema(); err != nil {
+		return Policy{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	return p, nil
+}
+
+// fp4Schema is the first schema_version that may carry the fp4 quantization.
+const fp4Schema = 2
+
+// validateFP4Schema rejects fp4 in a document that declares an older schema:
+// such a document is not one a sidecar of that schema could read.
+func (p Policy) validateFP4Schema() error {
+	if p.SchemaVersion >= fp4Schema {
+		return nil
+	}
+	for id, m := range p.Models {
+		for _, c := range m.Current {
+			if c.Quantization == decision.QuantFP4 {
+				return fmt.Errorf("models[%q].current %s: fp4 needs schema_version %d", id, c.EndpointID, fp4Schema)
+			}
+		}
+		for _, c := range m.Candidates {
+			if c.Quantization == decision.QuantFP4 {
+				return fmt.Errorf("models[%q].candidates %s: fp4 needs schema_version %d", id, c.EndpointID, fp4Schema)
+			}
+		}
+	}
+	return nil
 }
 
 func (p Policy) validate() error {
@@ -174,7 +201,7 @@ func (p Price) validate(path string) error {
 func ValidQuantization(q decision.Quantization) bool {
 	switch q {
 	case decision.QuantBF16, decision.QuantFP16, decision.QuantFP8,
-		decision.QuantInt8, decision.QuantInt4, decision.QuantUnknown:
+		decision.QuantInt8, decision.QuantInt4, decision.QuantFP4, decision.QuantUnknown:
 		return true
 	}
 	return false

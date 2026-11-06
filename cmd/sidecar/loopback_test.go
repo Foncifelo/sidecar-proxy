@@ -31,7 +31,9 @@ func TestLogHTTPLoopbackException(t *testing.T) {
 				"  fakeb:\n    base_url: http://localhost:9002/v1\n  together:\n    base_url: https://api.together.xyz/v1\n",
 			wantLines: 1,
 			want:      []string{"fakea", "fakeb", "ADR 0011"},
-			hidden:    []string{"http://", "127.0.0.1", "localhost", "9001", "9002", "together"},
+			// Ports are matched with their colon: a bare "9001" can appear in the
+			// log timestamp's nanoseconds.
+			hidden: []string{"http://", "127.0.0.1", "localhost", ":9001", ":9002", "together"},
 		},
 		{name: "https only", yaml: base + "providers:\n  together:\n    base_url: https://api.together.xyz/v1\n", wantLines: 0},
 	}

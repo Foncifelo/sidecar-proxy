@@ -24,6 +24,7 @@ const (
 	pMid     = "beta/model-a@fp8/openrouter"
 	pPricey  = "delta/model-a@fp16/direct"
 	pWorseQ  = "gamma/model-a@int4/direct"
+	pFP4     = "gamma/model-a@fp4/direct"
 	pRogue   = "rogue/model-a@bf16/direct"
 	pUpURL   = "https://upstream.acme.example/v1"
 	pGammaU  = "https://gamma.example/v1"
@@ -117,6 +118,24 @@ func TestPlan(t *testing.T) {
 			name: "cheapest first, capped at MaxAttempts with upstream last; current and worse quantization skipped",
 			a:    active(planPolicy()), req: tools,
 			want: []string{pCheap, pMid, pCurID}, reason: PlanRouted,
+		},
+		{
+			name: "fp4 candidate never replaces an fp8 current",
+			a: active(withModel(planPolicy(), func(m *Model) {
+				m.Candidates = append(m.Candidates, planCandidate(pFP4, "gamma", ChannelDirect, decision.QuantFP4, 5))
+			})),
+			req: tools, want: []string{pCheap, pMid, pCurID}, reason: PlanRouted,
+		},
+		{
+			name: "fp4 current may move to cheaper fp4 or int4",
+			a: active(withModel(planPolicy(), func(m *Model) {
+				m.Current = []Current{{
+					Provider: "acme", RawModel: pRaw, EndpointID: pCurID, Quantization: decision.QuantFP4,
+					Price: Price{PriceID: "9", InputPerM: 900, OutputPerM: 900},
+				}}
+				m.Candidates = append(m.Candidates, planCandidate(pFP4, "gamma", ChannelDirect, decision.QuantFP4, 5))
+			})),
+			req: tools, want: []string{pFP4, pWorseQ, pCurID}, reason: PlanRouted,
 		},
 		{
 			name: "open breaker excludes", a: active(planPolicy()), req: tools, br: openSet{pCheap: true},

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/Foncifelo/sidecar-proxy/internal/decision"
 	"github.com/Foncifelo/sidecar-proxy/internal/events"
 	"github.com/Foncifelo/sidecar-proxy/internal/ingest"
+	"github.com/Foncifelo/sidecar-proxy/internal/policy"
 )
 
 // Everything below is fictitious: model ids, endpoint ids, providers, prices
@@ -77,7 +79,9 @@ func (p *policyServed) counts() (ok, notMod, bad int) {
 }
 
 // newFakePolicyControl serves POST /v1/ingest and GET /v1/policy. The policy
-// answers 200 with policyETag, or 304 when If-None-Match equals it.
+// answers 200 with policyETag, or 304 when If-None-Match equals it. It acts as
+// a control whose N is 1: the sidecar asks for policy.SchemaVersion and gets
+// min(that, 1) = 1, which it must still accept.
 func newFakePolicyControl(t *testing.T) (*httptest.Server, <-chan ingest.Envelope, *policyServed) {
 	t.Helper()
 	return newFakePolicyControlDoc(t, policyDoc)
@@ -97,7 +101,7 @@ func newFakePolicyControlDoc(t *testing.T, doc string) (*httptest.Server, <-chan
 		served.mu.Lock()
 		defer served.mu.Unlock()
 		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+controlKey ||
-			r.Header.Get("X-Sidecar-Schema-Version") != "1" {
+			r.Header.Get("X-Sidecar-Schema-Version") != strconv.Itoa(policy.SchemaVersion) {
 			served.badRequests++
 			w.WriteHeader(http.StatusBadRequest)
 			return

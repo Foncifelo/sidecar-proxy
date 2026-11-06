@@ -122,7 +122,7 @@ func preload(t *testing.T, r *Refresher) {
 // 200, 304, 401, 426 and a control plane that is down; in every
 // failure the cached policy stays active (ADR 0001).
 func TestRefreshStatuses(t *testing.T) {
-	invalid := mutateDoc(t, func(d map[string]any) { d["schema_version"] = 2; d["version"] = "p_other" })
+	invalid := mutateDoc(t, func(d map[string]any) { d["schema_version"] = SchemaVersion + 1; d["version"] = "p_other" })
 	v2 := mutateDoc(t, func(d map[string]any) { d["version"] = "p_fictitious2" })
 	later := t0.Add(time.Hour)
 	tests := []struct {
@@ -158,7 +158,7 @@ func TestRefreshStatuses(t *testing.T) {
 			wantVersion: "p_fictitious", wantETag: exampleETag, wantAt: t0},
 		{name: "control down keeps the cache", preload: true, down: true,
 			wantVersion: "p_fictitious", wantETag: exampleETag, wantAt: t0},
-		{name: "invalid 200 does not replace the good policy", preload: true, status: 200, body: invalid, etag: `"2:p_other"`,
+		{name: "invalid 200 does not replace the good policy", preload: true, status: 200, body: invalid, etag: `"` + strconv.Itoa(SchemaVersion+1) + `:p_other"`,
 			wantErr: ErrUnsupportedSchema, wantVersion: "p_fictitious", wantETag: exampleETag, wantAt: t0},
 		{name: "invalid 200 without policy publishes nothing", status: 200, body: []byte(`{"schema_version":1}`), wantErr: ErrInvalid},
 	}

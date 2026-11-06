@@ -162,6 +162,70 @@ func TestQuantAtLeast(t *testing.T) {
 	}
 }
 
+// TestQuantAtLeastFP4 covers fp4 against every value of the enum in both
+// directions: fp4 ties with int4, ranks below int8 and never matches
+// unknown.
+func TestQuantAtLeastFP4(t *testing.T) {
+	tests := []struct {
+		other           Quantization
+		fp4AtLeastOther bool // quantAtLeast(fp4, other)
+		otherAtLeastFP4 bool // quantAtLeast(other, fp4)
+	}{
+		{QuantBF16, false, true},
+		{QuantFP16, false, true},
+		{QuantFP8, false, true},
+		{QuantInt8, false, true},
+		{QuantInt4, true, true},
+		{QuantFP4, true, true},
+		{QuantUnknown, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.other), func(t *testing.T) {
+			if got := quantAtLeast(QuantFP4, tt.other); got != tt.fp4AtLeastOther {
+				t.Errorf("quantAtLeast(fp4, %q) = %v, want %v", tt.other, got, tt.fp4AtLeastOther)
+			}
+			if got := quantAtLeast(tt.other, QuantFP4); got != tt.otherAtLeastFP4 {
+				t.Errorf("quantAtLeast(%q, fp4) = %v, want %v", tt.other, got, tt.otherAtLeastFP4)
+			}
+		})
+	}
+}
+
+// TestUnrecognisedQuantNeverEligible is the fp4 compatibility check: a
+// sidecar built before fp4 existed sees "fp4" as an unrecognised value, which
+// is what quantFromTheFuture stands for here. Such a candidate is discarded
+// for worse_quantization whatever the current quantization is, and a current
+// endpoint carrying it accepts no candidate.
+func TestUnrecognisedQuantNeverEligible(t *testing.T) {
+	const quantFromTheFuture = Quantization("fp3")
+	known := []Quantization{QuantBF16, QuantFP16, QuantFP8, QuantInt8, QuantInt4, QuantFP4, QuantUnknown}
+	for _, q := range known {
+		t.Run("candidate_vs_"+string(q), func(t *testing.T) {
+			current := cur()
+			current.Quantization = q
+			c := cand("cheap", 100_000, 100_000)
+			c.Quantization = quantFromTheFuture
+			d := Decide(allReq(), current, []Candidate{c}, th())
+			if d.Best.EndpointID != "current" || d.Reason != ReasonNoCandidate {
+				t.Fatalf("Best = %q Reason = %q, want current/%q", d.Best.EndpointID, d.Reason, ReasonNoCandidate)
+			}
+			if want := []Discard{{"cheap", ReasonWorseQuant}}; !reflect.DeepEqual(d.Discards, want) {
+				t.Errorf("Discards = %+v, want %+v", d.Discards, want)
+			}
+		})
+		t.Run("current_vs_"+string(q), func(t *testing.T) {
+			current := cur()
+			current.Quantization = quantFromTheFuture
+			c := cand("cheap", 100_000, 100_000)
+			c.Quantization = q
+			d := Decide(allReq(), current, []Candidate{c}, th())
+			if d.Best.EndpointID != "current" || d.Reason != ReasonNoCandidate {
+				t.Fatalf("Best = %q Reason = %q, want current/%q", d.Best.EndpointID, d.Reason, ReasonNoCandidate)
+			}
+		})
+	}
+}
+
 func TestDecideCheapestWins(t *testing.T) {
 	withFee := cand("b-openrouter", 900_000, 1_800_000) // 2_700_000 * 1.2 = 3_240_000
 	withFee.Price.ChannelFeeBps = 2_000

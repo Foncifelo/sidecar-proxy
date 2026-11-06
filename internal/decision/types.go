@@ -12,13 +12,15 @@ import (
 // values mirror the CHECK constraint on endpoints.quantization.
 type Quantization string
 
-// Known quantizations, from best to worst. QuantUnknown only matches itself.
+// Known quantizations, from best to worst. fp4 (FP4, MXFP4, NVFP4) ranks
+// with int4. QuantUnknown only matches itself.
 const (
 	QuantBF16    Quantization = "bf16"
 	QuantFP16    Quantization = "fp16"
 	QuantFP8     Quantization = "fp8"
 	QuantInt8    Quantization = "int8"
 	QuantInt4    Quantization = "int4"
+	QuantFP4     Quantization = "fp4"
 	QuantUnknown Quantization = "unknown"
 )
 
