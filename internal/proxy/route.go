@@ -283,7 +283,13 @@ func (h *Handler) deliver(w http.ResponseWriter, req *requestState, ep providers
 	fw := &flushWriter{w: w, rc: http.NewResponseController(w)}
 	_, werr := fw.Write(out)
 	if werr == nil && overflow {
-		_, werr = io.Copy(fw, resp.Body)
+		// firstByteReader keeps the read error apart from the write's, so a
+		// provider cut past the scan limit is not blamed on the agent.
+		rest := &firstByteReader{r: resp.Body, now: h.o.Now}
+		_, werr = io.Copy(fw, rest)
+		if rest.err != nil {
+			err = rest.err
+		}
 	}
 	switch {
 	case err != nil:

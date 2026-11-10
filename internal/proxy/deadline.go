@@ -50,12 +50,15 @@ func (d *deadlineWriter) Write(p []byte) (int, error) {
 func (d *deadlineWriter) Unwrap() http.ResponseWriter { return d.ResponseWriter }
 
 // idleReader cancels the upstream request when a single Read blocks longer
-// than timeout. The timer runs only while blocked in Read, so time spent
-// writing to a slow agent does not count as upstream silence.
+// than timeout; that Read and every later one return errUpstreamIdle. The
+// timer runs only while blocked in Read, so time spent writing to a slow
+// agent does not count as upstream silence. Reads and stop must run on one
+// goroutine.
 type idleReader struct {
 	r       io.Reader
 	timer   *time.Timer
 	timeout time.Duration
+	err     error // sticky errUpstreamIdle once the timer fired
 }
 
 // newIdleReader returns r guarded by timeout, and a stop func that must be
@@ -71,8 +74,20 @@ func newIdleReader(r io.Reader, timeout time.Duration, cancel context.CancelCaus
 }
 
 func (i *idleReader) Read(p []byte) (int, error) {
+	if i.err != nil {
+		return 0, i.err
+	}
 	i.timer.Reset(i.timeout)
 	n, err := i.r.Read(p)
-	i.timer.Stop()
+	if !i.timer.Stop() {
+		// Stop reports false once the timer fired: we cancelled the request,
+		// so whatever ended this read is a truncation, even a clean EOF
+		// (over TLS the cancel can make the provider end the body cleanly).
+		// A read that completed just as the timer fired counts too: the
+		// attempt's context is cancelled either way. The error sticks: a
+		// caller that drops it (a peek) must not then read a clean EOF.
+		i.err = errUpstreamIdle
+		return n, i.err
+	}
 	return n, err //nolint:wrapcheck // passthrough reader: callers inspect io.EOF
 }

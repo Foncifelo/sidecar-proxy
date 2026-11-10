@@ -283,27 +283,64 @@ func stallJSON(w http.ResponseWriter, r *http.Request) {
 
 // A provider that sends headers and then stalls mid-body is cut at
 // StreamIdleTimeout: the request does not hang, and the attempt's bulkhead
-// slot is released.
+// slot is released. A stalled candidate, direct or through the OpenRouter
+// channel (whose served-provider peek drops read errors), falls back to the
+// upstream, whose full answer reaches the agent; a stalled last attempt
+// delivers what it got with error_type upstream_body_error. The TLS case is
+// coverage: loopback does not reproduce the clean EOF that
+// TestIdleReaderEOFAfterCancel pins.
 func TestRouteProviderStallsMidBody(t *testing.T) {
 	const idle = 100 * time.Millisecond
 	const bound = 3 * time.Second // well under stallJSON's 10s
 	tests := []struct {
-		name       string
-		cand, up   http.HandlerFunc
-		wantStatus int
-		wantAborts []string
-		wantError  string
+		name         string
+		cand, up     http.HandlerFunc
+		orCand       bool // candidate through the OpenRouter channel
+		tlsUpstream  bool // upstream over HTTPS, like the candidate
+		wantStatus   int
+		wantAborts   []string
+		wantError    string
+		wantEndpoint string
+		wantFallback string
+		wantBody     string
 	}{
-		{"candidate stalls, upstream answers", stallJSON, jsonServe(200, provBody), 200, []string{abortHTTPError, ""}, ""},
-		{"last attempt stalls", jsonServe(429, `{"error":{}}`), stallJSON, 200, []string{abortRateLimited, ""}, "upstream_body_error"},
+		{"candidate stalls, upstream answers", stallJSON, jsonServe(200, provBody), false, false, 200, []string{abortHTTPError, ""}, "", curEndpoint, "1", wantBody},
+		{"OpenRouter candidate stalls, upstream answers", stallJSON, jsonServe(200, provBody), true, false, 200, []string{abortHTTPError, ""}, "", curEndpoint, "1", wantBody},
+		{"last attempt stalls", jsonServe(429, `{"error":{}}`), stallJSON, false, false, 200, []string{abortRateLimited, ""}, "upstream_body_error", curEndpoint, "1", `{"id":"x",`},
+		{"last attempt stalls over TLS", jsonServe(429, `{"error":{}}`), stallJSON, false, true, 200, []string{abortRateLimited, ""}, "upstream_body_error", curEndpoint, "1", `{"id":"x",`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := newRouteEnv(t, tt.cand, tt.up, nil, func(c *transport.Config, _ *Route) {
+			up := http.Handler(tt.up)
+			var tlsUpURL string
+			if tt.tlsUpstream {
+				tlsUp := httptest.NewTLSServer(tt.up)
+				t.Cleanup(tlsUp.Close)
+				tlsUpURL = tlsUp.URL
+				up = http.NotFoundHandler() // the plain upstream must not be called
+			}
+			var mutPolicy func(*policy.Policy)
+			if tt.orCand {
+				mutPolicy = func(p *policy.Policy) {
+					m := p.Models[fictModel]
+					m.Candidates[0].Channel = policy.ChannelOpenRouter
+					p.Models[fictModel] = m
+				}
+			}
+			env := newRouteEnv(t, tt.cand, up, mutPolicy, func(c *transport.Config, r *Route) {
 				c.Endpoints = map[string]transport.EndpointConfig{candEP: {MaxInFlight: 1}}
+				if tt.tlsUpstream {
+					r.Config.Upstream.BaseURL = tlsUpURL + "/v1"
+				}
 			}, func(o *Options) { o.StreamIdleTimeout = idle })
+			if tt.tlsUpstream {
+				// Same httptest certificate as the candidate's server.
+				cand, _ := env.set.Transport("fict-cheap")
+				upTr, _ := env.set.Transport("fictitious-provider")
+				upTr.TLSClientConfig = cand.TLSClientConfig.Clone()
+			}
 			start := time.Now()
-			resp, _ := env.post(t, routeReq, nil)
+			resp, body := env.post(t, routeReq, nil)
 			ev := env.h.sink.wait(t)
 			if elapsed := time.Since(start); elapsed > bound {
 				t.Fatalf("request took %s, want about %s", elapsed, idle)
@@ -317,6 +354,15 @@ func TestRouteProviderStallsMidBody(t *testing.T) {
 			if ev.ErrorType != tt.wantError {
 				t.Errorf("error_type %q, want %q", ev.ErrorType, tt.wantError)
 			}
+			if got := resp.Header.Get(HeaderEndpoint); got != tt.wantEndpoint {
+				t.Errorf("%s %q, want %q", HeaderEndpoint, got, tt.wantEndpoint)
+			}
+			if got := resp.Header.Get(HeaderFallback); got != tt.wantFallback {
+				t.Errorf("%s %q, want %q", HeaderFallback, got, tt.wantFallback)
+			}
+			if body != tt.wantBody {
+				t.Errorf("agent body\n got %s\nwant %s", body, tt.wantBody)
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), bound)
 			defer cancel()
 			release, err := env.set.Endpoint(candEP).Bulkhead.Acquire(ctx)
@@ -325,6 +371,30 @@ func TestRouteProviderStallsMidBody(t *testing.T) {
 			}
 			release()
 		})
+	}
+}
+
+// A last attempt cut past the 8 MiB usage scan is still an
+// upstream_body_error, not client_gone: the rest is copied after the
+// headers, and a read error there (a cut, or the idle timeout) must not pass
+// for a write error. A cut rather than a stall keeps this free of timing.
+func TestRouteCutPastScanLimit(t *testing.T) {
+	head := `{"id":"x","pad":"` + strings.Repeat("x", maxUsageScan) // fictitious padding past the scan limit
+	up := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, head)
+		_ = http.NewResponseController(w).Flush()
+		panic(http.ErrAbortHandler) // cut the chunked body without its last chunk
+	}
+	env := newRouteEnv(t, jsonServe(429, `{"error":{}}`), http.HandlerFunc(up), nil, nil)
+	resp, body := env.post(t, routeReq, nil)
+	ev := env.h.sink.wait(t)
+	if resp.StatusCode != 200 || body != head {
+		t.Errorf("status %d, agent body %d bytes, want the %d bytes sent", resp.StatusCode, len(body), len(head))
+	}
+	if ev.ErrorType != "upstream_body_error" {
+		t.Errorf("error_type %q, want upstream_body_error", ev.ErrorType)
 	}
 }
 

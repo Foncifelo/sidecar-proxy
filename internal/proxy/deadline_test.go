@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Foncifelo/sidecar-proxy/internal/events"
+	"github.com/Foncifelo/sidecar-proxy/internal/providers"
 )
 
 // stallServe sends the given blocks and then hangs without closing the body,
@@ -151,7 +153,7 @@ func (b *blockingReader) Read(p []byte) (int, error) {
 
 func TestIdleReader(t *testing.T) {
 	t.Parallel()
-	const timeout = 100 * time.Millisecond
+	const timeout = 250 * time.Millisecond // wide margins: the reads below must not race it under load
 	tests := []struct {
 		name       string
 		timeout    time.Duration
@@ -159,8 +161,8 @@ func TestIdleReader(t *testing.T) {
 		wantCancel bool
 	}{
 		{"reads in time", timeout, []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}, false},
-		{"total over timeout but each read in time", timeout, []time.Duration{60 * time.Millisecond, 60 * time.Millisecond, 60 * time.Millisecond}, false},
-		{"one slow read", timeout, []time.Duration{10 * time.Millisecond, 300 * time.Millisecond}, true},
+		{"total over timeout but each read in time", timeout, slices.Repeat([]time.Duration{20 * time.Millisecond}, 15), false},
+		{"one slow read", timeout, []time.Duration{10 * time.Millisecond, 3 * timeout}, true},
 		{"disabled", 0, []time.Duration{200 * time.Millisecond}, false},
 	}
 	for _, tc := range tests {
@@ -169,14 +171,97 @@ func TestIdleReader(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(context.Background())
 			defer cancel(nil)
 			r, stop := newIdleReader(&blockingReader{delays: tc.delays}, tc.timeout, cancel)
-			if _, err := io.Copy(io.Discard, r); err != nil {
-				t.Fatal(err)
+			_, err := io.Copy(io.Discard, r)
+			if tc.wantCancel && !errors.Is(err, errUpstreamIdle) {
+				t.Errorf("copy error %v, want %v", err, errUpstreamIdle)
+			}
+			if !tc.wantCancel && err != nil {
+				t.Errorf("copy error %v, want nil", err)
 			}
 			stop()
 			time.Sleep(2 * timeout) // a stopped timer must not fire late
 			cancelled := errors.Is(context.Cause(ctx), errUpstreamIdle)
 			if cancelled != tc.wantCancel {
 				t.Errorf("cancelled = %v, want %v (cause %v)", cancelled, tc.wantCancel, context.Cause(ctx))
+			}
+		})
+	}
+}
+
+// endsOnCancelReader blocks until ctx is cancelled and then ends cleanly, as
+// a TLS provider can after our cancel: close_notify, last chunk, io.EOF.
+// Every later Read is a clean EOF too.
+type endsOnCancelReader struct {
+	ctx   context.Context // the idle reader's cancel is what unblocks Read
+	data  string
+	ended bool
+}
+
+func (e *endsOnCancelReader) Read(p []byte) (int, error) {
+	if e.ended {
+		return 0, io.EOF
+	}
+	select {
+	case <-e.ctx.Done():
+	case <-time.After(10 * time.Second):
+		return 0, errors.New("never cancelled")
+	}
+	e.ended = true
+	return copy(p, e.data), io.EOF
+}
+
+// A clean EOF that only came because the idle timer cancelled the request is
+// still a truncation: the reader must report errUpstreamIdle, or a cut body
+// would be delivered as complete with no fallback.
+func TestIdleReaderEOFAfterCancel(t *testing.T) {
+	t.Parallel()
+	for _, data := range []string{"", `"choices":[]}`} {
+		t.Run(fmt.Sprintf("data %q", data), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			r, stop := newIdleReader(&endsOnCancelReader{ctx: ctx, data: data}, 20*time.Millisecond, cancel)
+			defer stop()
+			got, err := io.ReadAll(r)
+			if !errors.Is(err, errUpstreamIdle) {
+				t.Errorf("read error %v, want %v", err, errUpstreamIdle)
+			}
+			if string(got) != data {
+				t.Errorf("read %q, want %q", got, data)
+			}
+			// The error sticks: a caller that dropped it must not read on
+			// into a clean EOF.
+			if n, err := r.Read(make([]byte, 8)); n != 0 || !errors.Is(err, errUpstreamIdle) {
+				t.Errorf("read after the cut = %d, %v; want 0, %v", n, err, errUpstreamIdle)
+			}
+		})
+	}
+}
+
+// The OpenRouter adapter peeks the body for the served provider and drops
+// read errors (internal/providers/openrouter.go). Reading on through the
+// restored body must still surface the cut, for a JSON body and an SSE one.
+func TestIdleReaderThroughOpenRouterPeek(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ contentType, data string }{
+		{"application/json", `{"id":"x",`},
+		{"text/event-stream", ": ping\n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.contentType, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			idle, stop := newIdleReader(&endsOnCancelReader{ctx: ctx, data: tt.data}, 20*time.Millisecond, cancel)
+			defer stop()
+			resp := &http.Response{Header: http.Header{"Content-Type": {tt.contentType}}, Body: io.NopCloser(idle)}
+			_ = providers.OpenRouter{}.ParseServed(resp)
+			got, err := io.ReadAll(resp.Body)
+			if !errors.Is(err, errUpstreamIdle) {
+				t.Errorf("read error %v, want %v", err, errUpstreamIdle)
+			}
+			if string(got) != tt.data {
+				t.Errorf("read %q, want %q", got, tt.data)
 			}
 		})
 	}

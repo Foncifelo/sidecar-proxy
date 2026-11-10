@@ -167,6 +167,68 @@ func TestRouteStreamCutAfterFirstByte(t *testing.T) {
 	}
 }
 
+// A streaming provider that goes silent longer than StreamIdleTimeout is
+// cut like any other failure: before the first data event a candidate falls
+// back to the upstream; after it, or on the last attempt (nowhere to fall
+// back to, so its held bytes go out), the agent gets an SSE error and the
+// event is truncated, with no retry. Coverage of the contract: loopback does
+// not reproduce the clean TLS EOF that TestIdleReaderEOFAfterCancel pins.
+func TestRouteStreamStallsIdle(t *testing.T) {
+	// Above TLS setup and first-event latency on a loaded CI runner.
+	const idle = 300 * time.Millisecond
+	stall := step{wait: 10 * time.Second, block: doneChunk} // cut by the idle timeout long before
+	sseError := func(id string) string {
+		return "event: error\ndata: {\"error\":{\"type\":\"upstream_stream_error\",\"request_id\":\"" + id + "\"}}\n\n"
+	}
+	tests := []struct {
+		name         string
+		cand, up     http.HandlerFunc
+		wantEndpoint string
+		wantAborts   []string
+		wantState    events.StreamState
+		wantError    string
+		wantBody     func(id string) string
+	}{
+		{"stall before the first event", sseSteps(0, step{block: pingChunk}, stall), upStream, curEndpoint,
+			[]string{abortHTTPError, ""}, events.StreamComplete, "",
+			func(string) string { return upChunk + doneChunk }},
+		{"stall after the first event", sseSteps(0, step{block: candChunk}, stall), upStream, candEP,
+			[]string{""}, events.StreamTruncated, streamErrorType,
+			func(id string) string { return candOut + sseError(id) }},
+		{"last attempt stalls before the first event", jsonServe(429, `{"error":{}}`), sseSteps(0, step{block: pingChunk}, stall), curEndpoint,
+			[]string{abortRateLimited, ""}, events.StreamTruncated, streamErrorType,
+			func(id string) string { return pingChunk + sseError(id) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// No client p95: only the idle timeout can cut an attempt.
+			env := newRouteEnv(t, tt.cand, tt.up, nil, nil, func(o *Options) { o.StreamIdleTimeout = idle })
+			start := time.Now()
+			resp, body := env.post(t, streamReq, nil)
+			ev := env.h.sink.wait(t)
+			if elapsed := time.Since(start); elapsed > 5*time.Second { // the stall lasts 10 s
+				t.Fatalf("request took %s, want about %s", elapsed, idle)
+			}
+			if want := tt.wantBody(resp.Header.Get(HeaderRequestID)); resp.StatusCode != http.StatusOK || body != want {
+				t.Fatalf("status %d body\n got %q\nwant %q", resp.StatusCode, body, want)
+			}
+			wantFallback := "0"
+			if tt.wantEndpoint != candEP {
+				wantFallback = "1"
+			}
+			if resp.Header.Get(HeaderEndpoint) != tt.wantEndpoint || resp.Header.Get(HeaderFallback) != wantFallback {
+				t.Errorf("headers endpoint=%q fallback=%q", resp.Header.Get(HeaderEndpoint), resp.Header.Get(HeaderFallback))
+			}
+			if got := abortReasons(ev.Attempts); strings.Join(got, ",") != strings.Join(tt.wantAborts, ",") {
+				t.Errorf("abort reasons %q, want %q", got, tt.wantAborts)
+			}
+			if ev.StreamState != tt.wantState || ev.ErrorType != tt.wantError {
+				t.Errorf("event state=%q error=%q, want %q %q", ev.StreamState, ev.ErrorType, tt.wantState, tt.wantError)
+			}
+		})
+	}
+}
+
 // The attempt aborted for ttft_over_p95 carries cost_est from
 // the estimated prompt and its tokens_out_est, and it adds to cost_actual.
 func TestRouteStreamAbortedAttemptCost(t *testing.T) {
